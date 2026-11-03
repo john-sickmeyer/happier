@@ -1,0 +1,15 @@
+{
+  "focused_test_id": "profile-environment-add-name",
+  "field_bounds": [
+    143,
+    1398,
+    887,
+    1524
+  ],
+  "ime_top": 1517,
+  "caret_top": 1429.0,
+  "caret_bottom": 1492.0,
+  "caret_clearance_px": 25.0,
+  "field_fully_above_keyboard": false,
+  "pass": true
+}

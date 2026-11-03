@@ -1,0 +1,12 @@
+{
+  "focused_test_id": "profile-environment-add-name",
+  "field_bounds": [
+    143,
+    1611,
+    920,
+    1737
+  ],
+  "ime_top": 1517,
+  "clearance_px": -220,
+  "pass": false
+}
