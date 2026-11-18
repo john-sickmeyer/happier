@@ -30,6 +30,7 @@ export type AcpReplayHistorySessionClient = AcpReplaySidechainSessionClient & Re
 }>;
 
 export type AcpRuntimeSessionClient = AcpReplayHistorySessionClient & Readonly<{
+  setSessionRuntimeControls?: (controls: import('@/rpc/handlers/sessionControls').SessionRuntimeControls | null) => void;
   keepAlive: (thinking: boolean, mode: 'local' | 'remote') => void;
   sendSessionEvent?: (event: SessionEventMessage, id?: string) => void;
   sendAgentMessage: (

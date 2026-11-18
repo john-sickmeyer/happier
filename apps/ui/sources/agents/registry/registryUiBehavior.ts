@@ -22,6 +22,7 @@ import type { NonSteerablePayloadReason } from '@/sync/domains/session/control/s
 import type { SessionSubagent } from '@/sync/domains/session/subagents/types';
 import type { GoalActionCapabilities } from '@/components/sessions/workState/goalActionVisibility';
 import { CODEX_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/codex/uiBehavior';
+import { KIMI_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/kimi/uiBehavior';
 import { CLAUDE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/claude/uiBehavior';
 import { AUGGIE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/auggie/uiBehavior';
 import { OPENCODE_UI_BEHAVIOR_OVERRIDE } from '@/agents/providers/opencode/uiBehavior';
@@ -390,6 +391,7 @@ function buildDefaultAgentUiBehavior(agentId: AgentId): AgentUiBehavior {
 const AGENTS_UI_BEHAVIOR_OVERRIDES: Readonly<Partial<Record<AgentId, AgentUiBehavior>>> = Object.freeze({
     claude: CLAUDE_UI_BEHAVIOR_OVERRIDE,
     codex: CODEX_UI_BEHAVIOR_OVERRIDE,
+    kimi: KIMI_UI_BEHAVIOR_OVERRIDE,
     opencode: OPENCODE_UI_BEHAVIOR_OVERRIDE,
     auggie: AUGGIE_UI_BEHAVIOR_OVERRIDE,
     pi: PI_UI_BEHAVIOR_OVERRIDE,

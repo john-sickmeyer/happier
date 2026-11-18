@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { MessageQueue2 } from '@/agent/runtime/modeMessageQueue';
+import { ProviderPromptSubmissionUnconfirmedError } from '@/agent/runtime/providerPromptSubmission';
 import { registerPermissionModeMessageQueueBinding } from './bindPermissionModeQueue';
 import type { PermissionModeQueuedPrompt } from '@/agent/runtime/permission/permissionModeQueuedPrompt';
 
@@ -46,6 +47,22 @@ function waitForSteerWork() {
 }
 
 describe('registerPermissionModeMessageQueueBinding (in-flight steer)', () => {
+  it('retains uncertain steer custody without automatically sending the message again', async () => {
+    const { session, emitUserMessage } = createSessionHarness();
+    const { queue } = createQueue();
+    registerPermissionModeMessageQueueBinding({
+      session, queue, getCurrentPermissionMode: () => 'default', setCurrentPermissionMode: () => {},
+      inFlightSteer: {
+        supportsInFlightSteer: () => true, isTurnInFlight: () => true,
+        steerText: async () => { throw new ProviderPromptSubmissionUnconfirmedError(); },
+      },
+    });
+    await emitUserMessage({ content: { text: 'change the current turn' }, localId: 'steer-uncertain' });
+    expect(queue.size()).toBe(0);
+    expect(session.blockPendingMessageDelivery).toHaveBeenCalledWith({
+      localIds: ['steer-uncertain'], reason: 'ambiguous_terminal_delivery',
+    });
+  });
   it('preserves native command syntax and resolves selections without consuming replay context', async () => {
     const { session, emitUserMessage, setMetadataSnapshot } = createSessionHarness();
     const { queue } = createQueue();

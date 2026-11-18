@@ -1,6 +1,7 @@
 import { createCatalogDefinedAcpBackend, type CatalogDefinedAcpBackendOptions } from '@/agent/acp/catalog/createCatalogDefinedAcpBackend';
 import type { AgentBackend } from '@/agent/core';
 import { createKimiWireSource } from './kimiWireSource';
+import { kimiControlNotifications, negotiateKimiSessionControls } from './sessionControls';
 import { requireCurrentKimiRuntime } from '@/backends/kimi/cli/runtimeDiscovery';
 
 export type KimiBackendOptions = CatalogDefinedAcpBackendOptions;
@@ -11,6 +12,8 @@ export function createKimiBackend(options: KimiBackendOptions): AgentBackend {
     ...options,
     initialSessionModeId: 'default',
     providerTurnSource: createKimiWireSource(),
+    negotiateSessionControls: negotiateKimiSessionControls,
+    extensionHandlers: kimiControlNotifications,
     prepareProcessLaunch: async () => {
       const runtime = await requireCurrentKimiRuntime({
         processEnv: { ...process.env, ...options.env },

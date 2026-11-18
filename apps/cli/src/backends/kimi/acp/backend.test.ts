@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { withTempDir } from '@/testkit/fs/tempDir';
 import { writeKimiFixture } from '../cli/runtimeDiscovery.testkit';
 import { createKimiBackend } from './backend';
@@ -8,8 +8,87 @@ import type { AgentMessage } from '@/agent/core';
 import type { PermissionMode } from '@/api/types';
 import { AcpBackend } from '@/agent/acp/AcpBackend';
 import { getExecutionRunBackendFactory } from '@/agent/executionRuns/registry/executionRunBackendRegistry';
+import { createTestAcpRuntime } from '@/testkit/backends/acpRuntime';
+import { createApprovedPermissionHandler } from '@/testkit/backends/permissionHandler';
+import { createSessionClientWithMetadata } from '@/testkit/backends/sessionFixtures';
+import { MessageBuffer } from '@/ui/ink/messageBuffer';
 
 describe.skipIf(process.platform === 'win32')('Kimi ACP backend', () => {
+  it('admits native autonomous goal output and steer only after the matching live owner witness', async () => {
+    await withTempDir('happier-kimi-goal-turn-', async (dir) => {
+      const command = writeKimiFixture(dir, 'current', 1);
+      const backend = createKimiBackend({ cwd: dir, env: { HAPPIER_KIMI_PATH: command, KIMI_CODE_HOME: join(dir, 'kimi-home') } });
+      if (!(backend instanceof AcpBackend)) throw new Error('Expected shared ACP backend');
+      const fixture = createSessionClientWithMetadata();
+      const runtime = createTestAcpRuntime({
+        provider: 'kimi', directory: dir, session: fixture.session, messageBuffer: new MessageBuffer(), mcpServers: {},
+        permissionHandler: createApprovedPermissionHandler(), onThinkingChange: () => {}, ensureBackend: async () => backend,
+      });
+      try {
+        const sessionId = await runtime.startOrLoad({});
+        await vi.waitFor(() => expect(runtime.setGoal).toBeTypeOf('function'));
+        await runtime.setGoal?.('Autonomous native goal');
+        expect(runtime.isTurnInFlight()).toBe(false);
+        await runtime.refreshGoal?.();
+        await vi.waitFor(() => expect(runtime.isTurnInFlight()).toBe(true));
+        await runtime.steerPrompt('change direction');
+        const calls = readFileSync(join(dir, 'requests.ndjson'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+        expect(calls).toContainEqual(expect.objectContaining({ method: '_dev.happier/kimi/steer', params: {
+          sessionId, expectedTurnId: '0', prompt: [{ type: 'text', text: 'change direction' }],
+        } }));
+        await runtime.clearGoal?.();
+        await vi.waitFor(() => expect(fixture.committed.filter(message =>
+          message.type === 'message' && message.message === 'owned goal output')).toHaveLength(1));
+        await vi.waitFor(() => expect(runtime.isTurnInFlight()).toBe(false));
+      } finally { await runtime.reset(); }
+    });
+  });
+
+  it.each([undefined, 2, 1])('only binds and projects controls from the negotiated Kimi process (v%s)', async (version) => {
+    await withTempDir('happier-kimi-controls-', async (dir) => {
+      const command = writeKimiFixture(dir, 'current', version);
+      const backend = createKimiBackend({ cwd: dir, env: { HAPPIER_KIMI_PATH: command, KIMI_CODE_HOME: join(dir, 'kimi-home') } });
+      if (!(backend instanceof AcpBackend)) throw new Error('Expected shared ACP backend');
+      const fixture = createSessionClientWithMetadata();
+      const runtime = createTestAcpRuntime({
+        provider: 'kimi', directory: dir, session: fixture.session, messageBuffer: new MessageBuffer(), mcpServers: {},
+        permissionHandler: createApprovedPermissionHandler(), onThinkingChange: () => {}, ensureBackend: async () => backend,
+      });
+      const accepted = vi.fn();
+      try {
+        expect(runtime.supportsInFlightSteer()).toBe(false);
+        expect(runtime.setGoal).toBeUndefined();
+        const sessionId = await runtime.startOrLoad({});
+        expect(runtime.supportsInFlightSteer()).toBe(version === 1);
+        if (version === 1) {
+          await vi.waitFor(() => expect(runtime.setGoal).toBeTypeOf('function'));
+          expect(fixture.getMetadata()).not.toHaveProperty('sessionWorkStateV1');
+          await runtime.setGoal?.('Verify the goal', { tokenBudget: 8000 });
+          expect(fixture.getMetadata()).toMatchObject({ sessionWorkStateV1: { items: [{
+            title: 'Verify the goal', status: 'active', vendorRef: 'goal-owner', tokenBudget: 8000, tokensUsed: 17,
+          }] } });
+          await runtime.clearGoal?.();
+          expect(fixture.getMetadata()).toMatchObject({ sessionWorkStateV1: { items: [] } });
+          runtime.beginTurn();
+          await runtime.steerPrompt('change direction', { localId: 'user-17', onProviderPromptAccepted: accepted });
+          await expect(runtime.steerPrompt('queued', { onProviderPromptAccepted: accepted })).rejects.toThrow();
+          expect(accepted).toHaveBeenCalledTimes(1);
+          const calls = readFileSync(join(dir, 'requests.ndjson'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+          expect(calls).toContainEqual(expect.objectContaining({ method: '_dev.happier/kimi/steer', params: {
+            sessionId, prompt: [{ type: 'text', text: 'change direction' }], deliveryIdentity: { localId: 'user-17' },
+          } }));
+          expect(calls.filter((call) => call.method === 'session/prompt')).toHaveLength(0);
+        } else {
+          expect(runtime.setGoal).toBeUndefined();
+          expect(runtime.clearGoal).toBeUndefined();
+          await expect(runtime.steerPrompt('change direction')).rejects.toThrow();
+        }
+      } finally { await runtime.reset(); }
+      expect(runtime.supportsInFlightSteer()).toBe(false);
+      expect(runtime.setGoal).toBeUndefined();
+    });
+  });
+
   it('keeps native approvals manual across lifecycle and host policy changes while preserving ACP and MCP', async () => {
     await withTempDir('happier-kimi-backend-', async (dir) => {
       const physicalDir = realpathSync(dir);

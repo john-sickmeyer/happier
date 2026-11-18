@@ -145,6 +145,50 @@ describe('Kimi journal integrity', () => {
     });
   });
 
+  it('waits for the journal before admitting a permission on an already witnessed native goal turn', async () => {
+    await withTempDir('happier-kimi-goal-permission-', async directory => {
+      const { journal, host } = await fixture(directory);
+      const source = await createKimiWireSource()({
+        ...host, goalTurnWitness: (id: string) => id === '0' ? 'witnessed' : 'pending',
+        beginContinuation: () => ({ update: async () => {}, finish: async () => {} }),
+      });
+      try {
+        await expect(source.catchUp({ foregroundActive: false, permissionToolCallId: '1:unknown' })).rejects.toThrow();
+        const observed = vi.fn();
+        const admission = source.catchUp({ foregroundActive: false, permissionToolCallId: '0:approval' })
+          .then(() => observed(true), () => observed(false));
+        await source.catchUp();
+        expect(observed).not.toHaveBeenCalled();
+        await appendFile(journal, JSON.stringify({
+          type: 'turn.prompt', agentId: 'main', turnId: 0, origin: { kind: 'system_trigger', name: 'goal_continuation' },
+        }) + '\n');
+        await source.catchUp();
+        await admission;
+        expect(observed).toHaveBeenCalledWith(true);
+      } finally { await source.dispose(); }
+    });
+  });
+
+  it('delivers a witnessed successor when an older journal-only goal turn has ended', async () => {
+    await withTempDir('happier-kimi-goal-witness-', async directory => {
+      const { journal, host } = await fixture(directory);
+      const finish = vi.fn(async () => {});
+      const source = await createKimiWireSource()({
+        ...host, goalTurnWitness: (id: string) => id === '1' ? 'witnessed' : 'expired',
+        beginContinuation: ({ turnId }) => turnId === '1' ? { update: async () => {}, finish } : null,
+      });
+      try {
+        const records = [0, 1].flatMap(turnId => [
+          { type: 'turn.prompt', turnId, origin: { kind: 'system_trigger', name: 'goal_continuation' } },
+          { type: 'turn.ended', turnId, reason: 'completed' },
+        ]);
+        await appendFile(journal, records.map(record => JSON.stringify({ agentId: 'main', ...record })).join('\n') + '\n');
+        await source.catchUp();
+        expect(finish).toHaveBeenCalledTimes(1);
+      } finally { await source.dispose(); }
+    });
+  });
+
   it('ignores malformed unrelated index rows while validating the selected session', async () => {
     await withTempDir('happier-kimi-index-', async directory => {
       const { index, entry, host, fail } = await fixture(directory);

@@ -89,7 +89,7 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
         type DeliveryAction =
             | { kind: 'update'; update: SessionUpdate }
             | { kind: 'end'; outcome: AcpTurnOutcome };
-        type Delivery = { id: string; turnId: string; sink: AcpProviderTurnSink | null; actions: DeliveryAction[] };
+        type Delivery = { id: string; turnId: string; goal?: boolean; sink: AcpProviderTurnSink | null; actions: DeliveryAction[] };
         const deliveries: Delivery[] = [];
         let currentDelivery: Delivery | null = null;
         let deliveryTail = Promise.resolve();
@@ -149,7 +149,13 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
                 while (deliveries.length > 0) {
                     const delivery = deliveries[0];
                     if (!delivery.sink) {
-                        delivery.sink = host.beginContinuation({ id: delivery.id, turnId: delivery.turnId });
+                        if (delivery.goal && host.goalTurnWitness?.(delivery.turnId) === 'expired') {
+                            // A later native owner witness closes the admission window for an unverified journal turn.
+                            deliveries.shift();
+                            if (currentDelivery === delivery) currentDelivery = null;
+                            continue;
+                        }
+                        delivery.sink = host.beginContinuation({ id: delivery.id, turnId: delivery.turnId, ...(delivery.goal ? { goal: true } : {}) });
                         if (delivery.sink) wake();
                     }
                     // Native foreground completion can reach disk before the ACP response.
@@ -206,6 +212,9 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
                         tools.clear();
                         currentDelivery = event.taskId && tasks.delete(event.taskId)
                             ? { id: event.taskId, turnId: event.turnId, sink: null, actions: [] } : null;
+                        if (event.goalContinuation && host.goalTurnWitness) {
+                            currentDelivery = { id: event.turnId, turnId: event.turnId, goal: true, sink: null, actions: [] };
+                        }
                         if (currentDelivery) deliveries.push(currentDelivery);
                     } else if (event.kind === 'task') {
                         if (currentTurn && turnTools.has(`${currentTurn}:${event.parentToolCallId}`)) {
@@ -264,7 +273,9 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
                 while (requested && !disposed && !failure && !host.signal.aborted && !input?.signal?.aborted) {
                     if (requested === currentTurn && (currentDelivery?.sink || (currentOrigin === 'user' && input?.foregroundActive))) break;
                     const pendingTaskTurn = requested === currentTurn && currentDelivery !== null;
-                    if (!pendingTaskTurn && (Number(requested) <= latestTurn || (!input?.foregroundActive && tasks.size === 0))) {
+                    const goalWitness = host.goalTurnWitness?.(requested);
+                    if (!pendingTaskTurn && (Number(requested) <= latestTurn
+                        || (!input?.foregroundActive && tasks.size === 0 && goalWitness !== 'witnessed'))) {
                         throw new Error('Kimi permission request does not belong to an admitted native turn');
                     }
                     await new Promise<void>((resolveWait) => {

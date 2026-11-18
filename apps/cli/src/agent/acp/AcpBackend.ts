@@ -135,7 +135,7 @@ import {
   classifyAcpSessionUpdateDisposition,
 } from './connection/sdkContractDisposition';
 import type { PermissionResult } from '@/agent/permissions/permissionResult';
-import type { PermissionMode } from '@/api/types';
+import type { Metadata, PermissionMode } from '@/api/types';
 import { AcpPlanProjection, type NormalizedAcpPlanSnapshot } from './plans';
 
 function makeAbortError(message: string): Error {
@@ -813,6 +813,8 @@ export interface AcpBackendOptions {
 
   /** Provider-owned in-flight steer extension. Omit to retain the ACP session/prompt contract. */
   inFlightSteer?: AcpInFlightSteerAdapter;
+  /** Resolve extensions from this process's ACP initialize advertisement. */
+  negotiateSessionControls?: (agentCapabilities: unknown) => AcpNegotiatedSessionControls;
 
   /** Provider-owned projection for non-standard prompt usage fields and accounting semantics. */
   promptUsageAdapter?: AcpPromptUsageAdapter;
@@ -830,8 +832,30 @@ export type AcpInFlightSteerAdapter = Readonly<{
     prompt: string;
     content: readonly ContentBlock[];
     deliveryIdentity?: AcpSteerDeliveryIdentity;
+    expectedTurnId?: string;
   }>): unknown;
-  isAccepted(response: unknown): boolean;
+  isAccepted(response: unknown, sessionId?: string, expectedTurnId?: string): boolean;
+  isRejectedBeforeEffect?: (response: unknown, sessionId: string) => boolean;
+}>;
+
+export type AcpGoalRuntimeControls = Readonly<{
+  refreshGoal: () => Promise<void>;
+  setGoal: (objective: string | undefined, options?: Readonly<{
+    status?: string; tokenBudget?: number | null; objectiveFromMetadata?: boolean;
+  }>) => Promise<void>;
+  clearGoal: () => Promise<void>;
+}>;
+
+export type AcpSessionGoalHost = Readonly<{
+  sessionId: string;
+  request: (method: string, fields?: Readonly<Record<string, unknown>>) => Promise<unknown>;
+  updateMetadata: (update: (metadata: Metadata) => Metadata) => Promise<void>;
+}>;
+
+export type AcpNegotiatedSessionControls = Readonly<{
+  inFlightSteer?: AcpInFlightSteerAdapter;
+  createGoalControls?: (host: AcpSessionGoalHost) => AcpGoalRuntimeControls;
+  goalTurns?: boolean;
 }>;
 
 export type AcpPromptUsageProjection = Readonly<{
@@ -924,6 +948,12 @@ export class AcpBackend implements AgentBackend {
   private acpSessionId: string | null = null;
   private negotiatedSessionCapabilities: NegotiatedAcpSessionCapabilities = NO_NEGOTIATED_ACP_SESSION_CAPABILITIES;
   private negotiatedSessionLoadSupport: boolean | null = null;
+  private negotiatedControls: AcpNegotiatedSessionControls | undefined;
+
+  getNegotiatedSessionControls(): AcpNegotiatedSessionControls | undefined {
+    if (!this.options.negotiateSessionControls) return undefined;
+    return this.disposed || !this.acpSessionId || !this.connection ? {} : this.negotiatedControls ?? {};
+  }
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
   private replayCapture: AcpReplayCapture | null = null;
@@ -991,7 +1021,12 @@ export class AcpBackend implements AgentBackend {
   private providerSourceLifetime: AbortController | null = null;
   private readonly providerToolContexts = new Map<string, AcpPermissionCallContext>();
   private readonly providerContinuations = new Map<string, AcpPermissionCallContext | null>();
-  private providerTurn: Readonly<{ generation: number; turnId: string; lifetime: AbortController }> | null = null;
+  private readonly goalTurnWitnesses = new Map<string, Readonly<{ goalId: string; context: AcpPermissionCallContext }>>();
+  private latestGoalWitness = -1;
+  private providerTurn: Readonly<{ generation: number; turnId: string; lifetime: AbortController; goalId?: string }> | null = null;
+  getActiveGoalSteerTurnId(): string | null {
+    return this.providerTurn?.goalId && !this.isCurrentTurnGenerationClosed() ? this.providerTurn.turnId : null;
+  }
   private activePermissionContext: AcpPermissionCallContext | undefined;
   private turnGeneration = 0;
   private closedTurnGeneration: number | null = null;
@@ -1059,6 +1094,8 @@ export class AcpBackend implements AgentBackend {
     this.activePermissionContext = undefined;
     this.providerToolContexts.clear();
     this.providerContinuations.clear();
+    this.goalTurnWitnesses.clear();
+    this.latestGoalWitness = -1;
     try {
       const outcome = await withGracefulTeardownBound(Promise.resolve().then(() => source?.dispose()));
       if (outcome === 'timed_out') {
@@ -1141,13 +1178,21 @@ export class AcpBackend implements AgentBackend {
       releaseToolCalls: (ids) => {
         if (current()) for (const id of ids) this.providerToolContexts.delete(id);
       },
-      beginContinuation: ({ id, turnId }): AcpProviderTurnSink | null => {
-        const context = this.providerContinuations.get(id);
+      ...(this.negotiatedControls?.goalTurns === true ? {
+        goalTurnWitness: (turnId: string): 'witnessed' | 'pending' | 'expired' => {
+          if (this.goalTurnWitnesses.has(turnId)) return 'witnessed';
+          return Number(turnId) <= this.latestGoalWitness ? 'expired' : 'pending';
+        },
+      } : {}),
+      beginContinuation: ({ id, turnId, goal }): AcpProviderTurnSink | null => {
+        const witness = goal ? this.goalTurnWitnesses.get(turnId) : undefined;
+        const context = goal ? witness?.context : this.providerContinuations.get(id);
         if (!current() || !context || !readNonBlankOpaqueIdentifier(turnId)
           || this.waitingForResponse || this.activePromptRpc || this.providerTurn) return null;
-        this.providerContinuations.set(id, null);
+        if (goal) this.goalTurnWitnesses.delete(turnId);
+        else this.providerContinuations.set(id, null);
         this.beginResponseTurn(context);
-        const turn = { generation: this.turnGeneration, turnId, lifetime };
+        const turn = { generation: this.turnGeneration, turnId, lifetime, ...(witness ? { goalId: witness.goalId } : {}) };
         this.providerTurn = turn;
         this.emit({ type: 'status', status: 'running' });
         let pending = Promise.resolve();
@@ -1357,6 +1402,7 @@ export class AcpBackend implements AgentBackend {
     this.acpSessionId = null;
     this.negotiatedSessionCapabilities = NO_NEGOTIATED_ACP_SESSION_CAPABILITIES;
     this.negotiatedSessionLoadSupport = null;
+    this.negotiatedControls = undefined;
 
     connection?.close();
 
@@ -1439,6 +1485,26 @@ export class AcpBackend implements AgentBackend {
       turnId: resolveAcpPlanTurnId(this.turnGeneration),
       plans: this.plans,
       toolCalls: this.toolCalls,
+      ...(sessionId && sessionId === this.acpSessionId && this.negotiatedControls?.goalTurns === true
+        ? { goalTurns: {
+            witness: (turnId: string, goalId: string) => {
+              const nativeTurn = Number(turnId);
+              if (sdkSignal.aborted || this.disposed || sessionId !== this.acpSessionId
+                || !Number.isSafeInteger(nativeTurn) || nativeTurn <= this.latestGoalWitness) return;
+              this.latestGoalWitness = nativeTurn;
+              this.goalTurnWitnesses.set(turnId, {
+                goalId, context: { permissionMode: this.options.getPermissionMode?.() ?? this.options.permissionMode ?? 'default' },
+              });
+              // The same-session journal can reach disk on either side of the authenticated witness.
+              void this.catchUpProviderTurns().catch(() => {});
+            },
+            changed: () => {
+              if (!sdkSignal.aborted && !this.disposed && sessionId === this.acpSessionId) {
+                this.emit({ type: 'event', name: 'session_goal_changed', payload: {} });
+              }
+            },
+          } }
+        : {}),
       ...(this.options.promptCompletion
         ? {
             promptCompletion: {
@@ -2091,6 +2157,7 @@ export class AcpBackend implements AgentBackend {
     const negotiatedSessionCapabilities = readAcpNegotiatedSessionCapabilities(agentCapabilities);
     this.negotiatedSessionCapabilities = negotiatedSessionCapabilities;
     this.negotiatedSessionLoadSupport = negotiatedSessionLoadSupport;
+    this.negotiatedControls = this.options.negotiateSessionControls?.(agentCapabilities);
 
     if (this.options.authentication) {
       const advertisedMethodIds = new Set<string>();
@@ -3842,6 +3909,7 @@ export class AcpBackend implements AgentBackend {
     const turnGeneration = this.turnGeneration;
     // Native extensions may queue input between turns; projection must not outlive a turn that was open.
     const turnWasClosed = this.isTurnGenerationClosed(turnGeneration);
+    const expectedTurnId = this.getActiveGoalSteerTurnId() ?? undefined;
     const { metadata, ...deliveryIdentity } = options ?? {};
     const content = await buildAcpPromptContentBlocks({
       cwd: this.options.cwd,
@@ -3860,18 +3928,35 @@ export class AcpBackend implements AgentBackend {
         new Error('ACP steer is no longer current'),
       );
     }
-    if (this.options.inFlightSteer) {
-      const response = await connection.peer.requestExtension(
-        this.options.inFlightSteer.method,
-        this.options.inFlightSteer.buildParams({
-          sessionId: normalizedSessionId,
-          prompt,
-          content,
-          ...(options === undefined ? {} : { deliveryIdentity }),
-        }),
-      );
-      if (!this.options.inFlightSteer.isAccepted(response)) {
-        throw new Error(`${this.options.agentName} in-flight steer extension did not accept input`);
+    const negotiated = this.getNegotiatedSessionControls();
+    const steer = negotiated ? negotiated.inFlightSteer : this.options.inFlightSteer;
+    if (negotiated && !steer) {
+      throw toAcpPromptSubmissionPhaseError('rejected_before_effect', new Error('ACP in-flight steer was not negotiated'));
+    }
+    if (steer) {
+      const request = steer.buildParams({
+        sessionId: normalizedSessionId,
+        prompt,
+        content,
+        ...(options === undefined ? {} : { deliveryIdentity }),
+        ...(expectedTurnId === undefined ? {} : { expectedTurnId }),
+      });
+      let response: unknown;
+      try {
+        response = await connection.peer.requestExtension(steer.method, request);
+      } catch (error) {
+        if (!steer.isRejectedBeforeEffect) throw error;
+        throw toAcpPromptSubmissionPhaseError('effect_may_have_occurred', error);
+      }
+      if (!steer.isAccepted(response, normalizedSessionId, expectedTurnId)) {
+        const error = new Error(`${this.options.agentName} in-flight steer extension did not confirm same-turn delivery`);
+        if (steer.isRejectedBeforeEffect) {
+          throw toAcpPromptSubmissionPhaseError(
+            steer.isRejectedBeforeEffect(response, normalizedSessionId) ? 'rejected_before_effect' : 'effect_may_have_occurred',
+            error,
+          );
+        }
+        throw error;
       }
       return { kind: 'accepted_without_exact_final_response' };
     }

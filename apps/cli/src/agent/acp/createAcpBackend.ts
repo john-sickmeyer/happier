@@ -78,6 +78,7 @@ export interface CreateAcpBackendOptions {
   sessionModelAdapter?: AcpSessionModelAdapter;
   sessionModesEnabled?: AcpBackendOptions['sessionModesEnabled'];
   initialSessionModeId?: AcpBackendOptions['initialSessionModeId'];
+  negotiateSessionControls?: AcpBackendOptions['negotiateSessionControls'];
 
   /** Configured-catalog policy for session/load. Undefined retains built-in provider behavior. */
   declaredSessionLoadSupport?: boolean;
@@ -130,6 +131,7 @@ export function createAcpBackend(options: CreateAcpBackendOptions): AcpBackend {
     sessionModelAdapter: options.sessionModelAdapter,
     sessionModesEnabled: options.sessionModesEnabled,
     initialSessionModeId: options.initialSessionModeId,
+    negotiateSessionControls: options.negotiateSessionControls,
     declaredSessionLoadSupport: options.declaredSessionLoadSupport,
   };
 

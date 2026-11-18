@@ -20,6 +20,8 @@ export type CatalogDefinedAcpBackendOptions = AgentFactoryOptions & Readonly<{
   isAuthenticationSetupFailure?: AcpBackendOptions['isAuthenticationSetupFailure'];
   sessionModelAdapter?: AcpBackendOptions['sessionModelAdapter'];
   initialSessionModeId?: AcpBackendOptions['initialSessionModeId'];
+  negotiateSessionControls?: AcpBackendOptions['negotiateSessionControls'];
+  extensionHandlers?: AcpBackendOptions['extensionHandlers'];
   launch?: Readonly<{ command: string; args: readonly string[] }>;
 }>;
 
@@ -52,6 +54,8 @@ export function createCatalogDefinedAcpBackend(
     sessionModelAdapter: options.sessionModelAdapter,
     sessionModesEnabled: config.supportsModes !== 'no',
     initialSessionModeId: options.initialSessionModeId,
+    negotiateSessionControls: options.negotiateSessionControls,
+    extensionHandlers: options.extensionHandlers,
     mcpServers: config.mcpServers === 'drop' ? undefined : options.mcpServers,
     permissionHandler: options.permissionHandler,
     permissionMode: options.permissionMode,

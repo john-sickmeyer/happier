@@ -35,6 +35,10 @@ export type AcpExtensionHandlerContext = Readonly<{
   turnId?: string;
   plans?: Pick<AcpPlanProjection, 'project'>;
   toolCalls?: Pick<AcpToolCallTracker, 'enrich'>;
+  goalTurns?: Readonly<{
+    witness: (turnId: string, goalId: string) => void;
+    changed: () => void;
+  }>;
   promptCompletion?: Readonly<{
     settle: (params: Readonly<{
       correlationId: string;

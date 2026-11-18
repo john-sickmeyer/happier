@@ -12,7 +12,8 @@ export type AcpProviderTurnSourceHost = Readonly<{
   env: NodeJS.ProcessEnv;
   signal: AbortSignal;
   registerContinuation(input: Readonly<{ id: string; parentToolCallId: string }>): boolean;
-  beginContinuation(input: Readonly<{ id: string; turnId: string }>): AcpProviderTurnSink | null;
+  goalTurnWitness?(turnId: string): 'witnessed' | 'pending' | 'expired';
+  beginContinuation(input: Readonly<{ id: string; turnId: string; goal?: boolean }>): AcpProviderTurnSink | null;
   /** The native journal has crossed the parent terminal and all task registrations. */
   releaseToolCalls(toolCallIds: readonly string[]): void;
   fail(error: Error): void;

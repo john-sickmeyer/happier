@@ -10,6 +10,7 @@ import type { CatalogAgentId } from '@/backends/types';
 import {
   AcpPromptSubmissionPhaseError,
   type AcpBackend,
+  type AcpGoalRuntimeControls,
   type AcpPermissionHandler,
   type AcpPromptSubmissionEvidence,
   type SessionConfigOption,
@@ -75,7 +76,7 @@ import type {
   ProviderPromptWithMeta,
   ProviderTurnCompletionResult,
 } from '@/agent/runtime/providerPromptSubmission';
-import { ProviderPromptSubmissionRejectedBeforeEffectError } from '@/agent/runtime/providerPromptSubmission';
+import { ProviderPromptSubmissionRejectedBeforeEffectError, ProviderPromptSubmissionUnconfirmedError } from '@/agent/runtime/providerPromptSubmission';
 import {
   computePendingModelOverrideApplication,
   computePendingSessionModeOverrideApplication,
@@ -261,7 +262,7 @@ function stringifySessionConfigOptionValue(value: string | number | boolean | nu
   return '';
 }
 
-export type AcpRuntime = Readonly<{
+export type AcpRuntime = Partial<AcpGoalRuntimeControls> & Readonly<{
   getSessionId: () => string | null;
   /**
    * Whether this runtime supports "steering" additional user input into an already running turn.
@@ -316,6 +317,9 @@ export type AcpRuntimeSteerPromptOptions = InFlightSteerPromptOptions & Readonly
 
 export type AcpRuntimeBackend = Omit<AgentBackend, 'waitForResponseComplete' | 'dispose'> & {
   dispose: AcpBackend['dispose'];
+  getNegotiatedSessionControls?: AcpBackend['getNegotiatedSessionControls'];
+  getActiveGoalSteerTurnId?: AcpBackend['getActiveGoalSteerTurnId'];
+  requestExtension?: AcpBackend['requestExtension'];
   waitForResponseComplete?: (timeoutMs?: number | null) => Promise<AcpTurnOutcome | void>;
   /**
    * ACP-owned prompt evidence. Unlike sendPrompt(), first-update liveness remains
@@ -474,6 +478,7 @@ export function createAcpRuntime(params: {
   happierSessionId?: string;
   processEnv?: NodeJS.ProcessEnv;
   session: AcpRuntimeSessionClient;
+  getCurrentSession?: () => AcpRuntimeSessionClient;
   messageBuffer: MessageBuffer;
   mcpServers: Record<string, McpServerConfig>;
   permissionHandler: AcpPermissionHandler;
@@ -652,8 +657,43 @@ export function createAcpRuntime(params: {
       'ACP session startup completed after the runtime generation was reset',
     );
   };
-  const inFlightSteerEnabled = params.inFlightSteer?.enabled === true;
+  const supportsInFlightSteer = (): boolean => {
+    const negotiated = sessionId ? backend?.getNegotiatedSessionControls?.() : undefined;
+    return negotiated === undefined ? params.inFlightSteer?.enabled === true : negotiated.inFlightSteer !== undefined;
+  };
+  let goalCandidate: AcpGoalRuntimeControls | undefined;
+  let goalControls: AcpGoalRuntimeControls | undefined;
+  let goalReadback: { candidate: AcpGoalRuntimeControls; requested: boolean } | undefined;
+  const controlSession = () => params.getCurrentSession?.() ?? params.session;
+  const refreshNegotiatedGoal = async (): Promise<void> => {
+    const candidate = goalCandidate;
+    if (!candidate) return;
+    if (goalReadback?.candidate === candidate) {
+      goalReadback.requested = true;
+      return;
+    }
+    const readback = { candidate, requested: false };
+    goalReadback = readback;
+    try {
+      do {
+        // Native changes may arrive during a read. Collapse a burst into one fresh read of the latest state.
+        readback.requested = false;
+        try {
+          await candidate.refreshGoal();
+          if (candidate === goalCandidate && candidate !== goalControls) {
+            goalControls = candidate;
+            controlSession().setSessionRuntimeControls?.(runtime);
+          }
+        } catch {
+          logger.debug(`[${params.provider}] Native ACP goal readback was unavailable`);
+        }
+      } while (readback.requested && candidate === goalCandidate);
+    } finally {
+      if (goalReadback === readback) goalReadback = undefined;
+    }
+  };
   const publishInFlightSteerCapabilities = (available: boolean): void => {
+    const inFlightSteerEnabled = supportsInFlightSteer();
     const sessionWithAgentState = params.session as unknown as {
       updateAgentState?: (updater: (state: AgentState) => AgentState) => Promise<void> | void;
     };
@@ -1481,6 +1521,7 @@ export function createAcpRuntime(params: {
         clearToolCallCache();
         reportTurnMediaOverflow(turn);
         params.turnAssistantPreviewTracker?.reset();
+        if (backend?.getNegotiatedSessionControls?.()?.goalTurns !== true) void refreshNegotiatedGoal();
       }
     });
     return turn.settlement;
@@ -1591,10 +1632,15 @@ export function createAcpRuntime(params: {
     };
 
     b.onMessage((msg: AgentMessage) => {
+      if (msg.type === 'event' && msg.name === 'session_goal_changed') {
+        void refreshNegotiatedGoal();
+        return;
+      }
       if (handlerGeneration !== runtimeMetadataPublicationGeneration) return;
       if (handleProviderSessionInfoMessage(msg)) return;
       if (msg.type === 'status') {
         if (msg.status === 'running' && !turnState.turnInFlight && !turnState.currentTurnId) {
+          if (b.getActiveGoalSteerTurnId?.() != null) publishInFlightSteerCapabilities(true);
           ensureCurrentTurnId();
           params.onThinkingChange(true);
           params.session.keepAlive(true, 'remote');
@@ -2470,10 +2516,13 @@ export function createAcpRuntime(params: {
     }
   };
 
-  return {
+  const runtime: AcpRuntime = {
     getSessionId: () => sessionId,
-    supportsInFlightSteer: () => inFlightSteerEnabled,
-    isTurnInFlight: () => turnState.turnInFlight,
+    supportsInFlightSteer,
+    get refreshGoal() { return goalControls?.refreshGoal; },
+    get setGoal() { return goalControls?.setGoal; },
+    get clearGoal() { return goalControls?.clearGoal; },
+    isTurnInFlight: () => turnState.turnInFlight || (sessionId !== null && backend?.getActiveGoalSteerTurnId?.() != null),
 
     async isProviderNativeCommand(prompt: string): Promise<boolean> {
       const b = await ensureBackend();
@@ -2537,6 +2586,11 @@ export function createAcpRuntime(params: {
         postStartPendingDrainFlight = null;
         completedStartOrLoadIntentKey = null;
         sessionId = null;
+        goalCandidate = undefined;
+        if (goalControls) {
+          goalControls = undefined;
+          controlSession().setSessionRuntimeControls?.(runtime);
+        }
         pendingProviderSessionInfo = null;
         turnState.turnInFlight = false;
         publishInFlightSteerCapabilities(false);
@@ -2655,6 +2709,32 @@ export function createAcpRuntime(params: {
         assertRuntimeGeneration(operationGeneration);
         await applyStartupModelOverride();
         assertRuntimeGeneration(operationGeneration);
+        const activeBackend = backend;
+        const nativeId = opened.identity.vendorSessionId;
+        const negotiated = activeBackend?.getNegotiatedSessionControls?.();
+        if (negotiated) publishInFlightSteerCapabilities(turnState.turnInFlight);
+        if (negotiated?.createGoalControls && activeBackend?.requestExtension) {
+          const requestExtension = activeBackend.requestExtension.bind(activeBackend);
+          goalCandidate = negotiated.createGoalControls({
+            sessionId: nativeId,
+            request: async (method, fields) => {
+              assertRuntimeGeneration(operationGeneration);
+              const result = await requestExtension(method, { ...fields, sessionId: nativeId });
+              assertRuntimeGeneration(operationGeneration);
+              return result;
+            },
+            updateMetadata: async (update) => {
+              assertRuntimeGeneration(operationGeneration);
+              await controlSession().updateMetadata((metadata) => {
+                assertRuntimeGeneration(operationGeneration);
+                return update(metadata);
+              });
+            },
+          });
+          // Initial native read verifies the goal authority and restores any existing goal.
+          // Its latency does not hold up the first ACP prompt.
+          void refreshNegotiatedGoal();
+        }
         if (params.pendingQueue?.drainAfterStartOrLoad === true && opts.deferPendingDrain !== true) {
           const controller = new AbortController();
           startupDrainController = controller;
@@ -2740,7 +2820,7 @@ export function createAcpRuntime(params: {
     },
 
     async steerPrompt(prompt: string, options?: AcpRuntimeSteerPromptOptions): Promise<void> {
-      if (!inFlightSteerEnabled) {
+      if (!supportsInFlightSteer()) {
         throw new Error(`${params.provider} runtime does not support in-flight steer`);
       }
       if (!sessionId) {
@@ -2770,11 +2850,18 @@ export function createAcpRuntime(params: {
       const { onProviderPromptAccepted, ...deliveryIdentity } = options ?? {};
       let submissionEvidence: AcpPromptSubmissionEvidence | null = null;
       if (b.sendSteerPromptWithEvidence) {
-        submissionEvidence = await b.sendSteerPromptWithEvidence(
-          sessionId,
-          prompt,
-          options === undefined ? undefined : deliveryIdentity,
-        );
+        const hasStrictReceipt = b.getNegotiatedSessionControls?.()?.inFlightSteer?.isRejectedBeforeEffect !== undefined;
+        try {
+          submissionEvidence = await b.sendSteerPromptWithEvidence(
+            sessionId, prompt, options === undefined ? undefined : deliveryIdentity,
+          );
+        } catch (error) {
+          if (hasStrictReceipt
+              && error instanceof AcpPromptSubmissionPhaseError && error.phase === 'effect_may_have_occurred') {
+            throw new ProviderPromptSubmissionUnconfirmedError();
+          }
+          throw error;
+        }
       } else if (options === undefined) {
         await b.sendSteerPrompt!(sessionId, prompt);
       } else {
@@ -2834,4 +2921,5 @@ export function createAcpRuntime(params: {
     flushTurn,
 
   };
+  return runtime;
 }

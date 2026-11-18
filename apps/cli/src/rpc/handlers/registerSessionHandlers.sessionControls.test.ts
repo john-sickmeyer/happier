@@ -1309,7 +1309,7 @@ describe('registerSessionHandlers session controls', () => {
       handlers.get(SESSION_RPC_METHODS.SESSION_GOAL_SET)?.({ status: 'paused' }),
     ).resolves.toEqual({ workState });
 
-    expect(setGoal).toHaveBeenCalledWith('Ship goal controls', { status: 'paused' });
+    expect(setGoal).toHaveBeenCalledWith('Ship goal controls', { status: 'paused', objectiveFromMetadata: true });
   });
 
   it('delegates status-only goal updates to the runtime when metadata has no current objective', async () => {

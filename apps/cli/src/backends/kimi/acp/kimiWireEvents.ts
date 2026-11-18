@@ -7,7 +7,7 @@ import type { SessionUpdate } from '@/agent/acp/updates/types';
 
 export type KimiWireEvent =
   | Readonly<{ kind: 'metadata'; version: string }>
-  | Readonly<{ kind: 'turn-start'; turnId: string; originKind: string; taskId?: string }>
+  | Readonly<{ kind: 'turn-start'; turnId: string; originKind: string; taskId?: string; goalContinuation?: boolean }>
   | Readonly<{ kind: 'task'; taskId: string; parentToolCallId: string }>
   | Readonly<{
     kind: 'update'; turnId?: string; updates: SessionUpdate[];
@@ -17,7 +17,7 @@ export type KimiWireEvent =
 
 const identifier = lazySchema(() => z.string().refine(value => value.trim().length > 0));
 const turnIdSchema = lazySchema(() => z.union([z.number().int().nonnegative(), z.string().regex(/^(0|[1-9]\d*)$/)]).transform(String));
-const turnStartSchema = lazySchema(() => z.object({ turnId: turnIdSchema, origin: z.object({ kind: identifier, taskId: identifier.optional() }) }));
+const turnStartSchema = lazySchema(() => z.object({ turnId: turnIdSchema, origin: z.object({ kind: identifier, taskId: identifier.optional(), name: z.string().optional() }) }));
 const taskSchema = lazySchema(() => z.object({ info: z.object({ taskId: identifier, parentToolCallId: identifier, detached: z.literal(true) }) }));
 const turnEndSchema = lazySchema(() => z.object({
   turnId: turnIdSchema, reason: z.enum(['completed', 'cancelled', 'blocked', 'failed']),
@@ -123,7 +123,8 @@ export function decodeKimiWireRecord(value: unknown): KimiWireEvent | null {
     if (!parsed.success) return null;
     const { turnId, origin } = parsed.data;
     if (origin.kind === 'task') return origin.taskId ? { kind: 'turn-start', turnId, originKind: origin.kind, taskId: origin.taskId } : null;
-    return { kind: 'turn-start', turnId, originKind: origin.kind };
+    return { kind: 'turn-start', turnId, originKind: origin.kind,
+      ...(origin.kind === 'system_trigger' && origin.name === 'goal_continuation' ? { goalContinuation: true } : {}) };
   }
   if (record.type === 'task.started') {
     const parsed = taskSchema.safeParse(record);

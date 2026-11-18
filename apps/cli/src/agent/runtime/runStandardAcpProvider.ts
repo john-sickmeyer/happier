@@ -144,6 +144,7 @@ export type StandardAcpProviderConfig = {
     metadata: Metadata;
     machineId: string;
     session: ApiSessionClient;
+    getCurrentSession?: () => ApiSessionClient;
     messageBuffer: MessageBuffer;
     mcpServers: Record<string, import('@/agent').McpServerConfig>;
     permissionHandler: ProviderEnforcedPermissionHandler;
@@ -582,6 +583,7 @@ export async function runStandardAcpProvider(
     metadata: runtimeMetadata,
     machineId,
     session,
+    getCurrentSession: () => session,
     messageBuffer,
     mcpServers,
     permissionHandler,

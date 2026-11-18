@@ -29,6 +29,7 @@ type CatalogAcpProviderRuntimeParams<TBackendOptions extends object> = {
   loggerLabel: string;
   directory: string;
   session: ApiSessionClient;
+  getCurrentSession?: () => ApiSessionClient;
   messageBuffer: MessageBuffer;
   mcpServers: Record<string, McpServerConfig>;
   permissionHandler: AcpPermissionHandler;
@@ -105,6 +106,7 @@ export function createCatalogProviderAcpRuntime<TBackendOptions extends object =
     happierSessionId: params.session.sessionId,
     processEnv: params.processEnv,
     session: params.session,
+    getCurrentSession: params.getCurrentSession,
     messageBuffer: params.messageBuffer,
     mcpServers: params.mcpServers,
     permissionHandler: params.permissionHandler,

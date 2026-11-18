@@ -30,6 +30,16 @@ function createRegistryBehaviorSession(
 }
 
 describe('resolveAgentUiBehaviorFromFlavor', () => {
+    it('exposes Kimi goals only for an active runner offering native controls', () => {
+        const metadata = { flavor: 'kimi', path: '/repo', host: 'host' };
+        const active = createRegistryBehaviorSession(metadata, { canSet: true, canClear: true });
+        expect(supportsEditableSessionGoals({ agentId: 'kimi', session: active })).toBe(true);
+        expect(supportsEditableSessionGoals({ agentId: 'kimi', session: createRegistryBehaviorSession(metadata) })).toBe(false);
+        expect(supportsEditableSessionGoals({
+            agentId: 'kimi', session: { ...active, active: false }, daemonGoalControlsSupported: true,
+        })).toBe(false);
+    });
+
     it('resolves provider behavior through shared flavor aliases', () => {
         const behavior = resolveAgentUiBehaviorFromFlavor('open-code');
 

@@ -5,6 +5,7 @@ import { resolveAppendSystemPromptModeOverride } from '@/agent/runtime/permissio
 import { resolveProviderPromptForDispatch } from '@/agent/runtime/prompt/resolveProviderPromptForDispatch';
 import type { StructuredInputCatalogReaders } from '@/agent/runtime/prompt/resolveStructuredInputProviderContext';
 import { createProviderPromptAcceptanceSettlement } from '@/agent/runtime/prompt/createProviderPromptAcceptanceSettlement';
+import { ProviderPromptSubmissionUnconfirmedError } from '@/agent/runtime/providerPromptSubmission';
 import { isNonSteerablePromptPayload } from '@/cli/parsers/specialCommands';
 
 import { resolvePermissionModeUpdatedAtFromMessage } from './permissionModeCanonical';
@@ -345,6 +346,10 @@ export function registerPermissionModeMessageQueueBinding(opts: {
           return;
         } catch (error) {
           if (!isCurrentBinding(session, messageBindingGeneration)) return;
+          if (error instanceof ProviderPromptSubmissionUnconfirmedError) {
+            await blockPendingDelivery('ambiguous_terminal_delivery');
+            return;
+          }
           if (isClaimedSteer) {
             logger.infoFile('[permissionMode] In-flight provider input was rejected', { error, localId: deliveryIdentity.localId });
             await blockPendingDelivery('steering_unavailable');
