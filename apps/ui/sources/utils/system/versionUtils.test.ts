@@ -16,6 +16,20 @@ describe('versionUtils', () => {
             expect(getVersionSupportState('0.0.9', MINIMUM_CLI_VERSION)).toBe('unsupported');
             expect(getVersionSupportState('0.1.0', MINIMUM_CLI_VERSION)).toBe('supported');
         });
+
+        it('uses the underlying CLI release and prerelease for builds with SemVer metadata', () => {
+            expect(isVersionSupported('0.2.21+studio.kimi.1', MINIMUM_CLI_VERSION)).toBe(true);
+            expect(compareVersions('0.2.21+studio.kimi.1', '0.2.21+linux-arm64.007')).toBe(0);
+            expect(compareVersions('0.2.21-preview.3+build.1', '0.2.21')).toBe(-1);
+            expect(getVersionSupportState('0.0.9+studio.kimi.1', MINIMUM_CLI_VERSION)).toBe('unsupported');
+            expect(getVersionSupportState('0.1.0-dev.0+build.1', MINIMUM_CLI_VERSION)).toBe('unsupported');
+            expect(getVersionSupportState('0.2.21-dev.abcdef+build.1', MINIMUM_CLI_VERSION)).toBe('unknown');
+        });
+
+        it.each(['0.2.21+', '0.2.21+studio..1', '0.2.21+bad_id', '0.2.21+a+b', '+metadata'])(
+            'treats malformed build metadata as unknown (%s)',
+            version => expect(getVersionSupportState(version, MINIMUM_CLI_VERSION)).toBe('unknown'),
+        );
     });
 
     describe('compareVersions', () => {
@@ -82,6 +96,7 @@ describe('versionUtils', () => {
             expect(parseVersion('1.2.3')).toEqual({ major: 1, minor: 2, patch: 3 });
             expect(parseVersion('0.10.0')).toEqual({ major: 0, minor: 10, patch: 0 });
             expect(parseVersion('0.10.0-1')).toEqual({ major: 0, minor: 10, patch: 0 });
+            expect(parseVersion('0.2.21+studio.kimi.1')).toEqual({ major: 0, minor: 2, patch: 21 });
         });
 
         it('should return null for invalid versions', () => {

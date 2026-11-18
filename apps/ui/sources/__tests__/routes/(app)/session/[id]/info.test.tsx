@@ -409,7 +409,6 @@ vi.mock('@/utils/sessions/sessionUtils', async (importOriginal) => ({
     getSessionAvatarId: () => 'id',
 }));
 vi.mock('expo-clipboard', () => ({ setStringAsync: vi.fn() }));
-vi.mock('@/utils/system/versionUtils', () => ({ isVersionSupported: () => true, MINIMUM_CLI_VERSION: '0.0.0' }));
 vi.mock('@/utils/sessions/terminalSessionDetails', () => ({ getAttachCommandForSession: () => null, getTmuxFallbackReason: () => null, getTmuxTargetForSession: () => null }));
 vi.mock('@/utils/errors/errors', () => ({ HappyError: class HappyError extends Error {} }));
 vi.mock('@/sync/domains/profiles/profileUtils', () => ({ resolveProfileById: () => null }));
@@ -577,6 +576,17 @@ describe('/session/[id]/info', () => {
         const screen = await renderInfoScreen();
         expect(screen.getTextContent()).toContain('common.loading');
         expect(hydrateSpy).toHaveBeenCalledWith('session-1', 'SessionInfoRoute.ensureSessionVisible', { serverId: 'server-b' });
+    });
+
+    it.each([
+        ['0.2.21+studio.kimi.1', false],
+        ['0.0.9+studio.kimi.1', true],
+        ['0.2.21+bad_id', true],
+    ] as const)('renders the CLI update warning for %s according to its release', async (version, shouldWarn) => {
+        const session = createSessionFixture({ id: 'session-1' });
+        mockSession = { ...session, metadata: { ...session.metadata, version } };
+        const screen = await renderInfoScreen();
+        expect(Boolean(screen.findByTestId('sessionInfo.cliVersionOutdated'))).toBe(shouldWarn);
     });
 
     it('fails open and renders the session when the record exists even if global hydration is still in progress', async () => {
