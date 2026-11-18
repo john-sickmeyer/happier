@@ -4,6 +4,7 @@ import {
     getVersionSupportState,
     isVersionSupported,
     parseVersion,
+    supportsSessionForkRequestId,
     MINIMUM_CLI_VERSION,
     MINIMUM_CLI_BACKEND_TARGET_SPAWN_VERSION,
     MINIMUM_CLI_SESSION_USER_MESSAGE_RPC_VERSION,
@@ -30,6 +31,21 @@ describe('versionUtils', () => {
             'treats malformed build metadata as unknown (%s)',
             version => expect(getVersionSupportState(version, MINIMUM_CLI_VERSION)).toBe('unknown'),
         );
+
+        it.each([
+            '0.2.+studio.kimi.1',
+            '0.2.21-+studio.kimi.1',
+            '0.2.21-dev.+studio.kimi.1',
+            '0.2.21-dev.41-extra+studio.kimi.1',
+            '0.2.21-dev.1e3+studio.kimi.1',
+            '0.2.21-preview.0x10+studio.kimi.1',
+            '0.2.21-dev.01+studio.kimi.1',
+            '0.02.21+studio.kimi.1',
+            '0.2.21-dev.41-extra',
+        ])('does not enable release-specific capabilities for an unorderable identity (%s)', version => {
+            expect(getVersionSupportState(version)).toBe('unknown');
+            expect(supportsSessionForkRequestId(version)).toBe(false);
+        });
     });
 
     describe('compareVersions', () => {

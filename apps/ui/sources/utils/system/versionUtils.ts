@@ -24,11 +24,22 @@ export const MINIMUM_CLI_SESSION_FORK_REQUEST_ID_VERSION = '0.2.10-dev.41';
 function withoutBuildMetadata(version: string): string {
     const buildStart = version.indexOf('+');
     if (buildStart === -1) return version;
-    const build = version.slice(buildStart + 1);
-    if (buildStart === 0 || !/^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/.test(build)) {
-        throw new Error('Invalid version build metadata');
+    const release = version.slice(0, buildStart);
+    const [core, ...prereleaseParts] = release.split('-');
+    const coreParts = core.split('.');
+    const numericIdentifier = /^(?:0|[1-9][0-9]*)$/;
+    const dottedIdentifiers = /^[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*$/;
+    if (coreParts.length !== 3 || !coreParts.every(part => numericIdentifier.test(part))
+        || !dottedIdentifiers.test(version.slice(buildStart + 1))) {
+        throw new Error('Invalid semantic version with build metadata');
     }
-    return version.slice(0, buildStart);
+    if (prereleaseParts.length > 0) {
+        const prerelease = prereleaseParts.join('-');
+        if (!dottedIdentifiers.test(prerelease) || prerelease.split('.').some(part => /^0[0-9]+$/.test(part))) {
+            throw new Error('Invalid prerelease identifiers');
+        }
+    }
+    return release;
 }
 
 function normalizeComparableVersion(version: string): {
@@ -38,7 +49,9 @@ function normalizeComparableVersion(version: string): {
 } {
     const trimmed = String(version ?? '').trim();
     if (!trimmed) throw new Error('Invalid version');
-    const [baseVersion, rawSuffix = ''] = withoutBuildMetadata(trimmed).split('-', 2);
+    const release = withoutBuildMetadata(trimmed);
+    const [baseVersion] = release.split('-', 1);
+    const rawSuffix = release.slice(baseVersion.length + 1);
     const baseParts = baseVersion.split('.').map(Number);
     if (baseParts.length === 0 || baseParts.some((part) => !Number.isInteger(part) || part < 0)) {
         throw new Error('Invalid version');
@@ -53,15 +66,15 @@ function normalizeComparableVersion(version: string): {
     if (channel !== 'dev' && channel !== 'preview') {
         throw new Error('Unsupported prerelease channel');
     }
-    const prereleaseNumbers = suffixParts.slice(1).map(Number);
-    if (prereleaseNumbers.length === 0 || prereleaseNumbers.some((part) => !Number.isInteger(part) || part < 0)) {
+    const numericParts = suffixParts.slice(1);
+    if (numericParts.length === 0 || numericParts.some(part => !/^[0-9]+$/.test(part) || !Number.isInteger(Number(part)))) {
         throw new Error('Invalid prerelease version');
     }
 
     return {
         baseParts,
         prereleaseChannel: channel,
-        prereleaseNumbers,
+        prereleaseNumbers: numericParts.map(Number),
     };
 }
 
