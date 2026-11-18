@@ -189,12 +189,13 @@ describe('Kimi journal integrity', () => {
     });
   });
 
-  it('admits an authenticated detached successor after an ended, unwitnessed goal without replaying its content', async () => {
+  it.each([false, true])('admits an authenticated detached successor after an unwitnessed goal and its optional child (%s)', async orphanChild => {
     await withTempDir('happier-kimi-detached-after-goal-', async directory => {
       const { journal, host } = await fixture(directory);
       const tasks = new Set<string>();
       const update = vi.fn(async () => {});
       const finish = vi.fn(async () => {});
+      let foregroundOwnsSink = true;
       const source = await createKimiWireSource()({
         ...host, goalTurnWitness: () => 'pending',
         registerContinuation: ({ id, parentToolCallId }) => {
@@ -202,7 +203,7 @@ describe('Kimi journal integrity', () => {
           tasks.add(id);
           return true;
         },
-        beginContinuation: ({ id, goal }) => !goal && tasks.has(id) ? { update, finish } : null,
+        beginContinuation: ({ id, goal }) => !foregroundOwnsSink && !goal && tasks.has(id) ? { update, finish } : null,
       });
       try {
         const rows = [
@@ -212,15 +213,27 @@ describe('Kimi journal integrity', () => {
           { type: 'turn.ended', turnId: 0, reason: 'completed' },
           { type: 'turn.prompt', turnId: 1, origin: { kind: 'system_trigger', name: 'goal_continuation' } },
           { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', part: { type: 'text', text: 'unwitnessed' } } },
+          ...(orphanChild ? [
+            { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: '1', uuid: 'untrusted-parent', toolCallId: 'unknown', name: 'Bash', args: {} } },
+            { type: 'task.started', info: { taskId: 'untrusted-child', parentToolCallId: 'unknown', detached: true } },
+          ] : []),
           { type: 'turn.ended', turnId: 1, reason: 'completed' },
-          { type: 'turn.prompt', turnId: 2, origin: { kind: 'task', taskId: 'detached' } },
-          { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '2', part: { type: 'text', text: 'detached output' } } },
+          ...(orphanChild ? [
+            { type: 'turn.prompt', turnId: 2, origin: { kind: 'task', taskId: 'untrusted-child' } },
+            { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '2', part: { type: 'text', text: 'untrusted child output' } } },
+            { type: 'turn.ended', turnId: 2, reason: 'completed' },
+          ] : []),
+          { type: 'turn.prompt', turnId: 3, origin: { kind: 'task', taskId: 'detached' } },
+          { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '3', part: { type: 'text', text: 'detached output' } } },
         ];
         await appendFile(journal, rows.map(row => JSON.stringify({ agentId: 'main', ...row })).join('\n') + '\n');
+        await source.catchUp({ foregroundActive: true });
+        expect(update).not.toHaveBeenCalled();
+        foregroundOwnsSink = false;
         await source.catchUp({ foregroundActive: false });
         expect(update.mock.calls).toEqual([[{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'detached output' } }]]);
-        await source.catchUp({ foregroundActive: false, permissionToolCallId: '2:approval' });
-        await appendFile(journal, JSON.stringify({ agentId: 'main', type: 'turn.ended', turnId: 2, reason: 'completed' }) + '\n');
+        await source.catchUp({ foregroundActive: false, permissionToolCallId: '3:approval' });
+        await appendFile(journal, JSON.stringify({ agentId: 'main', type: 'turn.ended', turnId: 3, reason: 'completed' }) + '\n');
         await source.catchUp();
         expect(finish).toHaveBeenCalledTimes(1);
       } finally { await source.dispose(); }

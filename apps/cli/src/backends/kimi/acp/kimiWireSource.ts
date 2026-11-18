@@ -144,6 +144,18 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
         const beginDelivery = (delivery: Delivery) => host.beginContinuation({
             id: delivery.id, turnId: delivery.turnId, ...(delivery.goal ? { goal: true } : {}),
         });
+        function admitVerifiedSuccessor(): Delivery | undefined {
+            for (let index = 1; index < deliveries.length; index++) {
+                const successor = deliveries[index];
+                if (successor.goal && host.goalTurnWitness?.(successor.turnId) !== 'witnessed') continue;
+                const sink = beginDelivery(successor);
+                if (!sink) continue;
+                successor.sink = sink;
+                deliveries.splice(0, index);
+                return successor;
+            }
+            return undefined;
+        }
         /** Serialize admitted native updates and terminals, retaining exact task events until the foreground owner releases them. */
         const deliver = () => {
             deliveryTail = deliveryTail.then(async () => {
@@ -162,15 +174,7 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
                         if (goalWitness === 'pending' && delivery.actions.at(-1)?.kind === 'end') {
                             // Preserve a late witness while a foreground turn owns the sink. Once an independent
                             // successor actually acquires it, older ended, unverified turns cannot own transcript or approvals.
-                            const next = deliveries.findIndex(item => !item.goal || host.goalTurnWitness?.(item.turnId) === 'witnessed');
-                            if (next > 0) {
-                                const successor = deliveries[next];
-                                successor.sink = beginDelivery(successor);
-                                if (successor.sink) {
-                                    deliveries.splice(0, next);
-                                    delivery = successor;
-                                }
-                            }
+                            delivery = admitVerifiedSuccessor() ?? delivery;
                         }
                         delivery.sink ??= beginDelivery(delivery);
                         if (delivery.sink) wake();
