@@ -849,6 +849,7 @@ export type AcpGoalRuntimeControls = Readonly<{
 export type AcpSessionGoalHost = Readonly<{
   sessionId: string;
   request: (method: string, fields?: Readonly<Record<string, unknown>>) => Promise<unknown>;
+  getMetadataOwner?: () => object;
   updateMetadata: (update: (metadata: Metadata) => Metadata) => Promise<void>;
 }>;
 

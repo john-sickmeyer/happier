@@ -65,6 +65,7 @@ type RuntimeForLoop = {
   sendPrompt: (message: string) => Promise<void>;
   compactContext?: (command: string) => Promise<void>;
   refreshGoal?: () => Promise<unknown>;
+  republishSessionControls?: () => void;
   setGoal?: (objective: string | undefined, options?: Readonly<{ status?: string; tokenBudget?: number | null }>) => Promise<unknown>;
   clearGoal?: () => Promise<unknown>;
   listVendorPlugins?: () => Promise<unknown>;
@@ -326,6 +327,7 @@ export async function runStandardAcpProvider(
       }
       if (runtimeForInFlightSteer) {
         newSession.setSessionRuntimeControls?.(runtimeForInFlightSteer);
+        runtimeForInFlightSteer.republishSessionControls?.();
       }
       const swapFailures: unknown[] = [];
       try {

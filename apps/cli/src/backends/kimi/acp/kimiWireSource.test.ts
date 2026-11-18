@@ -189,6 +189,44 @@ describe('Kimi journal integrity', () => {
     });
   });
 
+  it('admits an authenticated detached successor after an ended, unwitnessed goal without replaying its content', async () => {
+    await withTempDir('happier-kimi-detached-after-goal-', async directory => {
+      const { journal, host } = await fixture(directory);
+      const tasks = new Set<string>();
+      const update = vi.fn(async () => {});
+      const finish = vi.fn(async () => {});
+      const source = await createKimiWireSource()({
+        ...host, goalTurnWitness: () => 'pending',
+        registerContinuation: ({ id, parentToolCallId }) => {
+          if (parentToolCallId !== '0:known') return false;
+          tasks.add(id);
+          return true;
+        },
+        beginContinuation: ({ id, goal }) => !goal && tasks.has(id) ? { update, finish } : null,
+      });
+      try {
+        const rows = [
+          { type: 'turn.prompt', turnId: 0, origin: { kind: 'user' } },
+          { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: '0', uuid: 'parent', toolCallId: 'known', name: 'Bash', args: {} } },
+          { type: 'task.started', info: { taskId: 'detached', parentToolCallId: 'known', detached: true } },
+          { type: 'turn.ended', turnId: 0, reason: 'completed' },
+          { type: 'turn.prompt', turnId: 1, origin: { kind: 'system_trigger', name: 'goal_continuation' } },
+          { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', part: { type: 'text', text: 'unwitnessed' } } },
+          { type: 'turn.ended', turnId: 1, reason: 'completed' },
+          { type: 'turn.prompt', turnId: 2, origin: { kind: 'task', taskId: 'detached' } },
+          { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '2', part: { type: 'text', text: 'detached output' } } },
+        ];
+        await appendFile(journal, rows.map(row => JSON.stringify({ agentId: 'main', ...row })).join('\n') + '\n');
+        await source.catchUp({ foregroundActive: false });
+        expect(update.mock.calls).toEqual([[{ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'detached output' } }]]);
+        await source.catchUp({ foregroundActive: false, permissionToolCallId: '2:approval' });
+        await appendFile(journal, JSON.stringify({ agentId: 'main', type: 'turn.ended', turnId: 2, reason: 'completed' }) + '\n');
+        await source.catchUp();
+        expect(finish).toHaveBeenCalledTimes(1);
+      } finally { await source.dispose(); }
+    });
+  });
+
   it('ignores malformed unrelated index rows while validating the selected session', async () => {
     await withTempDir('happier-kimi-index-', async directory => {
       const { index, entry, host, fail } = await fixture(directory);

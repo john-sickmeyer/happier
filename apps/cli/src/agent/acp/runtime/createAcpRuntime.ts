@@ -268,6 +268,7 @@ export type AcpRuntime = Partial<AcpGoalRuntimeControls> & Readonly<{
    * Whether this runtime supports "steering" additional user input into an already running turn.
    */
   supportsInFlightSteer: () => boolean;
+  republishSessionControls?: () => void;
   /**
    * Whether a turn is currently in-flight for this runtime (between beginTurn and flushTurn).
    */
@@ -694,7 +695,7 @@ export function createAcpRuntime(params: {
   };
   const publishInFlightSteerCapabilities = (available: boolean): void => {
     const inFlightSteerEnabled = supportsInFlightSteer();
-    const sessionWithAgentState = params.session as unknown as {
+    const sessionWithAgentState = controlSession() as unknown as {
       updateAgentState?: (updater: (state: AgentState) => AgentState) => Promise<void> | void;
     };
     if (typeof sessionWithAgentState.updateAgentState !== 'function') return;
@@ -1632,11 +1633,11 @@ export function createAcpRuntime(params: {
     };
 
     b.onMessage((msg: AgentMessage) => {
+      if (handlerGeneration !== runtimeMetadataPublicationGeneration) return;
       if (msg.type === 'event' && msg.name === 'session_goal_changed') {
         void refreshNegotiatedGoal();
         return;
       }
-      if (handlerGeneration !== runtimeMetadataPublicationGeneration) return;
       if (handleProviderSessionInfoMessage(msg)) return;
       if (msg.type === 'status') {
         if (msg.status === 'running' && !turnState.turnInFlight && !turnState.currentTurnId) {
@@ -2523,6 +2524,10 @@ export function createAcpRuntime(params: {
     get setGoal() { return goalControls?.setGoal; },
     get clearGoal() { return goalControls?.clearGoal; },
     isTurnInFlight: () => turnState.turnInFlight || (sessionId !== null && backend?.getActiveGoalSteerTurnId?.() != null),
+    republishSessionControls: () => {
+      publishInFlightSteerCapabilities(runtime.isTurnInFlight());
+      void refreshNegotiatedGoal();
+    },
 
     async isProviderNativeCommand(prompt: string): Promise<boolean> {
       const b = await ensureBackend();
@@ -2717,6 +2722,7 @@ export function createAcpRuntime(params: {
           const requestExtension = activeBackend.requestExtension.bind(activeBackend);
           goalCandidate = negotiated.createGoalControls({
             sessionId: nativeId,
+            getMetadataOwner: controlSession,
             request: async (method, fields) => {
               assertRuntimeGeneration(operationGeneration);
               const result = await requestExtension(method, { ...fields, sessionId: nativeId });

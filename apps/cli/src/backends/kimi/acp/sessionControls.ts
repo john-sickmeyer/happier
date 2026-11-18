@@ -47,6 +47,7 @@ export const kimiControlNotifications = [
 
 function createKimiGoalControls(host: AcpSessionGoalHost): AcpGoalRuntimeControls {
   let previous: NativeGoal | null | undefined;
+  let lastProjectionOwner: object | undefined;
   let tail = Promise.resolve();
   const serialize = (run: () => Promise<void>): Promise<void> => {
     const next = tail.then(run);
@@ -61,7 +62,8 @@ function createKimiGoalControls(host: AcpSessionGoalHost): AcpGoalRuntimeControl
     return reply.data;
   };
   const publish = async (goal: NativeGoal | null): Promise<void> => {
-    if (previous !== undefined && JSON.stringify(previous) === JSON.stringify(goal)) return;
+    const owner = host.getMetadataOwner?.() ?? host;
+    if (owner === lastProjectionOwner && previous !== undefined && JSON.stringify(previous) === JSON.stringify(goal)) return;
     const updatedAt = Date.now();
     const items: SessionWorkStateItemV1[] = goal ? [{
       id: buildVendorSessionWorkStateItemId('goal', `kimi:${goal.goalId}`), kind: 'goal', origin: 'vendor',
@@ -69,7 +71,9 @@ function createKimiGoalControls(host: AcpSessionGoalHost): AcpGoalRuntimeControl
       tokenBudget: goal.tokenBudget, tokensUsed: goal.tokensUsed, timeUsedSeconds: goal.wallClockMs / 1000,
       goalCapabilities: { canEdit: true, canStop: true, canClear: true }, updatedAt,
     }] : [];
+    let applied = false;
     await host.updateMetadata(metadata => {
+      applied = true;
       if (!goal) {
         const existing = readDisplayableSessionWorkStateV1((metadata as Record<string, unknown>).sessionWorkStateV1);
         if (!existing?.items.some(item => item.id.startsWith(goalItemPrefix))) return metadata;
@@ -81,6 +85,8 @@ function createKimiGoalControls(host: AcpSessionGoalHost): AcpGoalRuntimeControl
         }),
       };
     });
+    // The offline client intentionally accepts writes without applying their updater.
+    lastProjectionOwner = applied ? owner : undefined;
     previous = goal;
   };
   return {

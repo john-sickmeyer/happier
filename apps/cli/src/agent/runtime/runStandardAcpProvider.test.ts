@@ -1143,6 +1143,23 @@ describe('runStandardAcpProvider', () => {
     expect(callOrder).toEqual(['before-notify', 'hook:start', 'hook:end', 'after-notify']);
   });
 
+  it('re-publishes the running session controls after a relay client swap', async () => {
+    const harness = createHarness();
+    const initialize = harness.deps.initializeBackendRunSessionFn;
+    const repl = { ...harness.session, sessionId: 'session-2', setSessionRuntimeControls: vi.fn() };
+    const republish = vi.fn();
+    harness.runtime.republishSessionControls = republish;
+    let swap: (session: typeof repl) => Promise<void> = async () => { throw new Error('No relay swap callback'); };
+    harness.deps.initializeBackendRunSessionFn = async (options: { onSessionSwap: typeof swap }) => {
+      swap = options.onSessionSwap;
+      return initialize(options);
+    };
+    harness.deps.runPermissionModePromptLoopFn = async () => { await swap(repl); };
+    await runStandardAcpProvider(harness.opts, harness.config, harness.deps);
+    expect(repl.setSessionRuntimeControls).toHaveBeenCalledWith(harness.runtime);
+    expect(republish).toHaveBeenCalledTimes(1);
+  });
+
   it('runs provider-specific dispose hooks during cleanup', async () => {
     const harness = createHarness();
     const onDispose = vi.fn(async () => undefined);

@@ -141,21 +141,38 @@ export function createKimiWireSource(): AcpProviderTurnSourceFactory {
             host.releaseToolCalls(released);
             return pruned;
         };
+        const beginDelivery = (delivery: Delivery) => host.beginContinuation({
+            id: delivery.id, turnId: delivery.turnId, ...(delivery.goal ? { goal: true } : {}),
+        });
         /** Serialize admitted native updates and terminals, retaining exact task events until the foreground owner releases them. */
         const deliver = () => {
             deliveryTail = deliveryTail.then(async () => {
                 if (disposed || failure || host.signal.aborted) return;
                 registerTasks();
                 while (deliveries.length > 0) {
-                    const delivery = deliveries[0];
+                    let delivery = deliveries[0];
                     if (!delivery.sink) {
-                        if (delivery.goal && host.goalTurnWitness?.(delivery.turnId) === 'expired') {
+                        const goalWitness = delivery.goal ? host.goalTurnWitness?.(delivery.turnId) : undefined;
+                        if (goalWitness === 'expired') {
                             // A later native owner witness closes the admission window for an unverified journal turn.
                             deliveries.shift();
                             if (currentDelivery === delivery) currentDelivery = null;
                             continue;
                         }
-                        delivery.sink = host.beginContinuation({ id: delivery.id, turnId: delivery.turnId, ...(delivery.goal ? { goal: true } : {}) });
+                        if (goalWitness === 'pending' && delivery.actions.at(-1)?.kind === 'end') {
+                            // Preserve a late witness while a foreground turn owns the sink. Once an independent
+                            // successor actually acquires it, older ended, unverified turns cannot own transcript or approvals.
+                            const next = deliveries.findIndex(item => !item.goal || host.goalTurnWitness?.(item.turnId) === 'witnessed');
+                            if (next > 0) {
+                                const successor = deliveries[next];
+                                successor.sink = beginDelivery(successor);
+                                if (successor.sink) {
+                                    deliveries.splice(0, next);
+                                    delivery = successor;
+                                }
+                            }
+                        }
+                        delivery.sink ??= beginDelivery(delivery);
                         if (delivery.sink) wake();
                     }
                     // Native foreground completion can reach disk before the ACP response.

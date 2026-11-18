@@ -5,7 +5,7 @@ import { withTempDir } from '@/testkit/fs/tempDir';
 import { writeKimiFixture } from '../cli/runtimeDiscovery.testkit';
 import { createKimiBackend } from './backend';
 import type { AgentMessage } from '@/agent/core';
-import type { PermissionMode } from '@/api/types';
+import type { AgentState, PermissionMode } from '@/api/types';
 import { AcpBackend } from '@/agent/acp/AcpBackend';
 import { getExecutionRunBackendFactory } from '@/agent/executionRuns/registry/executionRunBackendRegistry';
 import { createTestAcpRuntime } from '@/testkit/backends/acpRuntime';
@@ -14,6 +14,42 @@ import { createSessionClientWithMetadata } from '@/testkit/backends/sessionFixtu
 import { MessageBuffer } from '@/ui/ink/messageBuffer';
 
 describe.skipIf(process.platform === 'win32')('Kimi ACP backend', () => {
+  it('restores the native goal and current steer window when an offline runner attaches to the relay', async () => {
+    await withTempDir('happier-kimi-rebind-', async dir => {
+      const command = writeKimiFixture(dir, 'current', 1);
+      const backend = createKimiBackend({ cwd: dir, env: { HAPPIER_KIMI_PATH: command, KIMI_CODE_HOME: join(dir, 'kimi-home') } });
+      if (!(backend instanceof AcpBackend)) throw new Error('Expected shared ACP backend');
+      const relay = createSessionClientWithMetadata();
+      let agentState: AgentState = { requests: {}, completedRequests: {} };
+      const live = {
+        ...relay.session, updateAgentState: (update: (state: AgentState) => AgentState) => { agentState = update(agentState); },
+        setSessionRuntimeControls: vi.fn(),
+      };
+      const offline = { ...live, updateMetadata: () => {}, updateAgentState: () => {}, setSessionRuntimeControls: vi.fn() };
+      let session: typeof live = offline;
+      const runtime = createTestAcpRuntime({
+        provider: 'kimi', directory: dir, session, getCurrentSession: () => session,
+        messageBuffer: new MessageBuffer(), mcpServers: {}, permissionHandler: createApprovedPermissionHandler(),
+        onThinkingChange: () => {}, ensureBackend: async () => backend,
+      });
+      try {
+        await runtime.startOrLoad({});
+        await vi.waitFor(() => expect(runtime.setGoal).toBeTypeOf('function'));
+        await runtime.setGoal?.('Restore this native goal', { status: 'paused' });
+        runtime.beginTurn();
+        session = live;
+        runtime.republishSessionControls?.();
+        await vi.waitFor(() => expect(relay.getMetadata()).toMatchObject({ sessionWorkStateV1: { items: [{
+          title: 'Restore this native goal', status: 'paused', vendorRef: 'goal-owner',
+        }] } }));
+        expect(agentState.capabilities).toMatchObject({ inFlightSteerSupported: true, inFlightSteerAvailable: true });
+        const writes = relay.metadataUpdates.length;
+        await runtime.refreshGoal?.();
+        expect(relay.metadataUpdates).toHaveLength(writes);
+      } finally { await runtime.reset(); }
+    });
+  });
+
   it('admits native autonomous goal output and steer only after the matching live owner witness', async () => {
     await withTempDir('happier-kimi-goal-turn-', async (dir) => {
       const command = writeKimiFixture(dir, 'current', 1);
